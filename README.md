@@ -82,13 +82,13 @@ pip install -e .
 
 4. Restart Claude Desktop
 
-#### Option B: VS Code with Claude / Copilot
+#### Option B: Claude Code (VS Code / CLI)
 
-1. Create `.vscode/mcp.json` in your workspace (or add to existing):
+Add to `~/.claude/claude.json`:
 
 ```json
 {
-  "servers": {
+  "mcpServers": {
     "gmail": {
       "command": "/path/to/gmail-mcp/.venv/bin/python",
       "args": ["-m", "gmail_mcp.server"]
@@ -97,14 +97,11 @@ pip install -e .
 }
 ```
 
-2. Reload VS Code window
-
 #### Finding Your Path
 
-To get the correct path for the config:
+Run this in the gmail-mcp directory to get the exact path:
 
 ```bash
-cd /path/to/gmail-mcp
 echo "$(pwd)/.venv/bin/python"
 ```
 
