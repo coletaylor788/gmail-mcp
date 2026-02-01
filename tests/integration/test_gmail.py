@@ -64,7 +64,7 @@ class TestAuthenticateFlow:
         assert email is not None
         assert "@" in email
         assert is_authenticated()
-        print(f"\n✓ Successfully authenticated as: {email}")
+        # Authentication successful (email not logged for security)
 
 
 class TestAuthenticateTool:
@@ -118,7 +118,7 @@ class TestListEmailsTool:
             assert "ID:" in text
             assert "From:" in text
             assert "Subject:" in text
-            print(f"\n{text}")
+            # Email contents not logged for security
 
     @pytest.mark.asyncio
     async def test_list_emails_respects_max_results(self, ensure_authenticated):
