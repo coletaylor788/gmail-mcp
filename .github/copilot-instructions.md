@@ -29,7 +29,7 @@ For new features or significant changes:
 4. **Wait for user approval before proceeding to implementation**
 
 #### Plan Checklist Template
-Every plan must end with a checklist like this:
+Every plan must end with a checklist. **The checklist is a live status document** - check off items immediately as you complete them, not at the end.
 
 ```markdown
 ---
@@ -61,20 +61,20 @@ Every plan must end with a checklist like this:
 ### 3. Implement
 - Follow the coding guidelines below
 - Make incremental, testable changes
-- **Update the plan checklist as you complete each step**
-- Check off implementation items as they're done
+- **Check off each checklist item immediately after completing it** - the plan is a live status document
+- If you need to undo something, uncheck the relevant items
 
 ### 4. Test
 - Run unit tests: `pytest tests/`
 - Run linter: `ruff check src/ tests/`
-- **Check off testing items in the plan as tests pass**
-- If tests fail and you need to change code, **uncheck the relevant implementation items** and fix them
+- **Check off testing items immediately as each test passes**
+- If tests fail, fix the code, then check off when passing
 
 ### 5. Clean Up
 - Remove any unused code, imports, or files
 - Simplify overly complex logic
 - Re-run tests to confirm nothing broke
-- **Check off cleanup items in the plan**
+- **Check off cleanup items as you complete them**
 
 ### 6. Update Docs
 After implementation is complete:

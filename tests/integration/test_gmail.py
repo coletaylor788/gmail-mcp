@@ -10,13 +10,26 @@ To run these tests locally:
 The first run will open a browser for OAuth authentication.
 """
 
+import base64
 import os
+import time
+import uuid
+from email import encoders
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 import pytest
 
-from gmail_mcp.auth import is_authenticated, run_oauth_flow
+from gmail_mcp.auth import get_gmail_service, is_authenticated, run_oauth_flow
 from gmail_mcp.config import get_credentials_path
-from gmail_mcp.server import _authenticate, _list_emails
+from gmail_mcp.server import (
+    _archive_email,
+    _authenticate,
+    _get_attachments,
+    _get_email,
+    _list_emails,
+)
 
 # Skip all tests in this module if running in CI or if credentials don't exist
 pytestmark = pytest.mark.skipif(
@@ -44,6 +57,69 @@ def ensure_authenticated(ensure_credentials):
             "Not authenticated. Run pytest tests/integration/test_gmail.py::"
             "test_authenticate_flow -v first."
         )
+
+
+# Helper functions for creating test emails
+def _create_test_email_with_attachment(
+    service, subject: str, archive: bool = True
+) -> str:
+    """Send a test email to self with an attachment.
+
+    Args:
+        service: Gmail API service
+        subject: Email subject
+        archive: If True, archive immediately to avoid cluttering inbox
+
+    Returns:
+        Message ID of the sent email
+    """
+    # Get user's email address
+    profile = service.users().getProfile(userId="me").execute()
+    email_address = profile["emailAddress"]
+
+    # Create multipart message
+    message = MIMEMultipart()
+    message["to"] = email_address
+    message["from"] = email_address
+    message["subject"] = subject
+
+    # Add text body
+    body = MIMEText("This is a test email for integration testing.", "plain")
+    message.attach(body)
+
+    # Add a small test attachment
+    attachment = MIMEBase("application", "octet-stream")
+    attachment.set_payload(b"Test attachment content for gmail-mcp integration tests.")
+    encoders.encode_base64(attachment)
+    attachment.add_header("Content-Disposition", "attachment", filename="test_attachment.txt")
+    message.attach(attachment)
+
+    # Encode and send
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+    sent = service.users().messages().send(userId="me", body={"raw": raw}).execute()
+
+    # Archive immediately so it doesn't clutter the inbox (unless we need it in inbox)
+    if archive:
+        service.users().messages().modify(
+            userId="me",
+            id=sent["id"],
+            body={"removeLabelIds": ["INBOX"]},
+        ).execute()
+
+    return sent["id"]
+
+
+def _delete_test_email(service, message_id: str) -> None:
+    """Permanently delete a test email.
+
+    Args:
+        service: Gmail API service
+        message_id: ID of message to delete
+    """
+    try:
+        service.users().messages().delete(userId="me", id=message_id).execute()
+    except Exception:
+        pass  # Ignore errors during cleanup
 
 
 class TestAuthenticateFlow:
@@ -197,3 +273,122 @@ class TestListEmailsFilters:
         assert len(result) == 1
         # Should succeed (may or may not find emails)
         assert "Error" not in result[0].text or "Not authenticated" not in result[0].text
+
+
+class TestGetEmailTool:
+    """Integration tests for get_email tool."""
+
+    @pytest.fixture
+    def test_email(self, ensure_authenticated):
+        """Create a test email and clean it up after test."""
+        service = get_gmail_service()
+        subject = f"[gmail-mcp-test] {uuid.uuid4()}"
+        message_id = _create_test_email_with_attachment(service, subject)
+
+        # Wait a moment for the email to be available
+        time.sleep(2)
+
+        yield {"id": message_id, "subject": subject}
+
+        # Cleanup
+        _delete_test_email(service, message_id)
+
+    @pytest.mark.asyncio
+    async def test_get_email_returns_content(self, test_email):
+        """Test that get_email returns full email content."""
+        result = await _get_email({"email_id": test_email["id"]})
+
+        assert len(result) == 1
+        text = result[0].text
+
+        assert "From:" in text
+        assert "Subject:" in text
+        assert "test email for integration testing" in text
+        assert "Attachments (1)" in text
+        assert "test_attachment.txt" in text
+
+    @pytest.mark.asyncio
+    async def test_get_email_text_only_format(self, test_email):
+        """Test that format=text_only returns only text body."""
+        result = await _get_email({"email_id": test_email["id"], "format": "text_only"})
+
+        assert len(result) == 1
+        text = result[0].text
+
+        assert "Body (Text)" in text
+        assert "test email for integration testing" in text
+
+
+class TestGetAttachmentsTool:
+    """Integration tests for get_attachments tool."""
+
+    @pytest.fixture
+    def test_email_with_attachment(self, ensure_authenticated):
+        """Create a test email with attachment and clean it up after test."""
+        service = get_gmail_service()
+        subject = f"[gmail-mcp-test] {uuid.uuid4()}"
+        message_id = _create_test_email_with_attachment(service, subject)
+
+        # Wait a moment for the email to be available
+        time.sleep(2)
+
+        yield {"id": message_id, "subject": subject}
+
+        # Cleanup
+        _delete_test_email(service, message_id)
+
+    @pytest.mark.asyncio
+    async def test_get_attachments_downloads_file(self, test_email_with_attachment, tmp_path):
+        """Test that get_attachments downloads attachment to disk."""
+        result = await _get_attachments({
+            "email_id": test_email_with_attachment["id"],
+            "save_to": str(tmp_path),
+        })
+
+        assert len(result) == 1
+        text = result[0].text
+
+        assert "Downloaded 1 attachment" in text
+
+        # Verify file was created
+        downloaded_file = tmp_path / "test_attachment.txt"
+        assert downloaded_file.exists()
+        assert b"Test attachment content" in downloaded_file.read_bytes()
+
+
+class TestArchiveEmailTool:
+    """Integration tests for archive_email tool."""
+
+    @pytest.fixture
+    def test_email_to_archive(self, ensure_authenticated):
+        """Create a test email to archive and clean it up after test."""
+        service = get_gmail_service()
+        subject = f"[gmail-mcp-test] {uuid.uuid4()}"
+        # Don't archive - we need it in inbox to test archiving
+        message_id = _create_test_email_with_attachment(service, subject, archive=False)
+
+        # Wait a moment for the email to be available
+        time.sleep(2)
+
+        yield {"id": message_id, "subject": subject}
+
+        # Cleanup - delete the test email
+        _delete_test_email(service, message_id)
+
+    @pytest.mark.asyncio
+    async def test_archive_email_removes_inbox_label(self, test_email_to_archive):
+        """Test that archive_email removes INBOX label."""
+        message_id = test_email_to_archive["id"]
+
+        # Archive the email
+        result = await _archive_email({"email_id": message_id})
+
+        assert len(result) == 1
+        assert "archived successfully" in result[0].text
+
+        # Verify the email no longer has INBOX label
+        service = get_gmail_service()
+        msg = service.users().messages().get(userId="me", id=message_id).execute()
+        labels = msg.get("labelIds", [])
+
+        assert "INBOX" not in labels

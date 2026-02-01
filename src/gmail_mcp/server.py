@@ -1,6 +1,10 @@
 """Gmail MCP Server implementation."""
 
 import asyncio
+import base64
+import os
+import re
+from pathlib import Path
 from typing import Any
 
 from mcp.server import Server
@@ -68,6 +72,62 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        Tool(
+            name="get_email",
+            description="Get the full contents of an email by ID.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "email_id": {
+                        "type": "string",
+                        "description": "The email ID (from list_emails)",
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["full", "text_only", "html_only"],
+                        "description": "Response format (default: full)",
+                        "default": "full",
+                    },
+                },
+                "required": ["email_id"],
+            },
+        ),
+        Tool(
+            name="get_attachments",
+            description="Download attachments from an email.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "email_id": {
+                        "type": "string",
+                        "description": "The email ID (from list_emails)",
+                    },
+                    "attachment_id": {
+                        "type": "string",
+                        "description": "Specific attachment ID (downloads all if omitted)",
+                    },
+                    "save_to": {
+                        "type": "string",
+                        "description": "Directory to save files (default: ~/Downloads)",
+                    },
+                },
+                "required": ["email_id"],
+            },
+        ),
+        Tool(
+            name="archive_email",
+            description="Archive an email (remove from inbox, keep in All Mail).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "email_id": {
+                        "type": "string",
+                        "description": "The email ID to archive",
+                    },
+                },
+                "required": ["email_id"],
+            },
+        ),
     ]
 
 
@@ -78,6 +138,12 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         return await _authenticate()
     elif name == "list_emails":
         return await _list_emails(arguments)
+    elif name == "get_email":
+        return await _get_email(arguments)
+    elif name == "get_attachments":
+        return await _get_attachments(arguments)
+    elif name == "archive_email":
+        return await _archive_email(arguments)
     else:
         raise ValueError(f"Unknown tool: {name}")
 
@@ -192,6 +258,300 @@ async def _list_emails(arguments: dict[str, Any]) -> list[TextContent]:
 
     except Exception as e:
         return [TextContent(type="text", text=f"Error listing emails: {e}")]
+
+
+def _extract_body_parts(payload: dict) -> tuple[str | None, str | None, list[dict]]:
+    """Extract text, HTML body, and attachments from email payload.
+
+    Args:
+        payload: Gmail API message payload
+
+    Returns:
+        Tuple of (text_body, html_body, attachments_list)
+    """
+    text_body = None
+    html_body = None
+    attachments = []
+
+    def process_part(part: dict) -> None:
+        nonlocal text_body, html_body
+        mime_type = part.get("mimeType", "")
+        filename = part.get("filename", "")
+
+        # Check if this part is an attachment
+        if filename and part.get("body", {}).get("attachmentId"):
+            attachments.append({
+                "id": part["body"]["attachmentId"],
+                "filename": filename,
+                "mimeType": mime_type,
+                "size": part["body"].get("size", 0),
+            })
+            return
+
+        # Extract body content
+        if mime_type == "text/plain" and not text_body:
+            body_data = part.get("body", {}).get("data")
+            if body_data:
+                text_body = base64.urlsafe_b64decode(body_data).decode("utf-8")
+        elif mime_type == "text/html" and not html_body:
+            body_data = part.get("body", {}).get("data")
+            if body_data:
+                html_body = base64.urlsafe_b64decode(body_data).decode("utf-8")
+
+        # Recursively process multipart content
+        if "parts" in part:
+            for subpart in part["parts"]:
+                process_part(subpart)
+
+    # Process the payload (may be single part or multipart)
+    process_part(payload)
+
+    return text_body, html_body, attachments
+
+
+async def _get_email(arguments: dict[str, Any]) -> list[TextContent]:
+    """Handle get_email tool call."""
+    if not is_authenticated():
+        return [
+            TextContent(
+                type="text",
+                text="Error: Not authenticated. Please call the 'authenticate' tool first.",
+            )
+        ]
+
+    service = get_gmail_service()
+    if not service:
+        return [
+            TextContent(
+                type="text",
+                text="Error: Failed to connect to Gmail. Please re-authenticate.",
+            )
+        ]
+
+    email_id = arguments.get("email_id")
+    if not email_id:
+        return [TextContent(type="text", text="Error: email_id is required.")]
+
+    format_type = arguments.get("format", "full")
+
+    try:
+        msg = (
+            service.users()
+            .messages()
+            .get(userId="me", id=email_id, format="full")
+            .execute()
+        )
+
+        headers = {h["name"]: h["value"] for h in msg["payload"]["headers"]}
+        text_body, html_body, attachments = _extract_body_parts(msg["payload"])
+
+        # Build output
+        output = [
+            f"From: {headers.get('From', 'Unknown')}",
+            f"To: {headers.get('To', 'Unknown')}",
+            f"Subject: {headers.get('Subject', 'No Subject')}",
+            f"Date: {headers.get('Date', 'Unknown')}",
+            "",
+        ]
+
+        # Add body based on format
+        if format_type == "text_only":
+            if text_body:
+                output.append("--- Body (Text) ---")
+                output.append(text_body)
+            else:
+                output.append("(No plain text body available)")
+        elif format_type == "html_only":
+            if html_body:
+                output.append("--- Body (HTML) ---")
+                output.append(html_body)
+            else:
+                output.append("(No HTML body available)")
+        else:  # full
+            if text_body:
+                output.append("--- Body (Text) ---")
+                output.append(text_body)
+            if html_body:
+                output.append("")
+                output.append("--- Body (HTML) ---")
+                output.append(html_body)
+            if not text_body and not html_body:
+                output.append("(No body content available)")
+
+        # Add attachments list
+        if attachments:
+            output.append("")
+            output.append(f"--- Attachments ({len(attachments)}) ---")
+            for att in attachments:
+                size_kb = att["size"] / 1024
+                output.append(
+                    f"- {att['filename']} ({att['mimeType']}, {size_kb:.1f} KB, "
+                    f"ID: {att['id']})"
+                )
+
+        return [TextContent(type="text", text="\n".join(output))]
+
+    except Exception as e:
+        return [TextContent(type="text", text=f"Error getting email: {e}")]
+
+
+def _sanitize_filename(filename: str) -> str:
+    """Sanitize filename to prevent path traversal and invalid characters.
+
+    Args:
+        filename: Original filename
+
+    Returns:
+        Sanitized filename safe for filesystem
+    """
+    # Remove path separators and null bytes
+    filename = filename.replace("/", "_").replace("\\", "_").replace("\x00", "")
+    # Remove other potentially problematic characters
+    filename = re.sub(r'[<>:"|?*]', "_", filename)
+    # Limit length
+    if len(filename) > 255:
+        name, ext = os.path.splitext(filename)
+        filename = name[: 255 - len(ext)] + ext
+    # Ensure non-empty
+    if not filename or filename.startswith("."):
+        filename = "attachment" + filename
+    return filename
+
+
+async def _get_attachments(arguments: dict[str, Any]) -> list[TextContent]:
+    """Handle get_attachments tool call."""
+    if not is_authenticated():
+        return [
+            TextContent(
+                type="text",
+                text="Error: Not authenticated. Please call the 'authenticate' tool first.",
+            )
+        ]
+
+    service = get_gmail_service()
+    if not service:
+        return [
+            TextContent(
+                type="text",
+                text="Error: Failed to connect to Gmail. Please re-authenticate.",
+            )
+        ]
+
+    email_id = arguments.get("email_id")
+    if not email_id:
+        return [TextContent(type="text", text="Error: email_id is required.")]
+
+    attachment_id = arguments.get("attachment_id")
+    save_to = arguments.get("save_to", "~/Downloads")
+    save_dir = Path(save_to).expanduser()
+
+    # Ensure save directory exists
+    try:
+        save_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        return [TextContent(type="text", text=f"Error creating directory: {e}")]
+
+    try:
+        # Get email to find attachments
+        msg = (
+            service.users()
+            .messages()
+            .get(userId="me", id=email_id, format="full")
+            .execute()
+        )
+
+        _, _, attachments = _extract_body_parts(msg["payload"])
+
+        if not attachments:
+            return [TextContent(type="text", text="No attachments found in this email.")]
+
+        # Filter to specific attachment if requested
+        if attachment_id:
+            attachments = [a for a in attachments if a["id"] == attachment_id]
+            if not attachments:
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"Attachment with ID '{attachment_id}' not found.",
+                    )
+                ]
+
+        saved_files = []
+        for att in attachments:
+            # Download attachment
+            att_data = (
+                service.users()
+                .messages()
+                .attachments()
+                .get(userId="me", messageId=email_id, id=att["id"])
+                .execute()
+            )
+
+            # Decode and save
+            file_data = base64.urlsafe_b64decode(att_data["data"])
+            safe_filename = _sanitize_filename(att["filename"])
+            file_path = save_dir / safe_filename
+
+            # Handle duplicate filenames
+            counter = 1
+            while file_path.exists():
+                name, ext = os.path.splitext(safe_filename)
+                file_path = save_dir / f"{name}_{counter}{ext}"
+                counter += 1
+
+            file_path.write_bytes(file_data)
+            saved_files.append(str(file_path))
+
+        output = [f"Downloaded {len(saved_files)} attachment(s):"]
+        for path in saved_files:
+            output.append(f"  - {path}")
+
+        return [TextContent(type="text", text="\n".join(output))]
+
+    except Exception as e:
+        return [TextContent(type="text", text=f"Error downloading attachments: {e}")]
+
+
+async def _archive_email(arguments: dict[str, Any]) -> list[TextContent]:
+    """Handle archive_email tool call."""
+    if not is_authenticated():
+        return [
+            TextContent(
+                type="text",
+                text="Error: Not authenticated. Please call the 'authenticate' tool first.",
+            )
+        ]
+
+    service = get_gmail_service()
+    if not service:
+        return [
+            TextContent(
+                type="text",
+                text="Error: Failed to connect to Gmail. Please re-authenticate.",
+            )
+        ]
+
+    email_id = arguments.get("email_id")
+    if not email_id:
+        return [TextContent(type="text", text="Error: email_id is required.")]
+
+    try:
+        # Remove INBOX label (archive)
+        service.users().messages().modify(
+            userId="me",
+            id=email_id,
+            body={"removeLabelIds": ["INBOX"]},
+        ).execute()
+
+        return [
+            TextContent(
+                type="text",
+                text=f"Email {email_id} archived successfully.",
+            )
+        ]
+
+    except Exception as e:
+        return [TextContent(type="text", text=f"Error archiving email: {e}")]
 
 
 async def main():

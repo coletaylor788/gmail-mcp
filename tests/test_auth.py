@@ -123,6 +123,10 @@ class TestRunOauthFlow:
         """Returns email without browser flow when already authenticated."""
         mock_creds = MagicMock()
         mock_creds.valid = True
+        mock_creds.scopes = [
+            "https://www.googleapis.com/auth/gmail.modify",
+            "https://www.googleapis.com/auth/gmail.send",
+        ]
 
         mock_service = MagicMock()
         mock_service.users.return_value.getProfile.return_value.execute.return_value = {
@@ -143,6 +147,10 @@ class TestRunOauthFlow:
         mock_creds.valid = False
         mock_creds.expired = True
         mock_creds.refresh_token = "refresh"
+        mock_creds.scopes = [
+            "https://www.googleapis.com/auth/gmail.modify",
+            "https://www.googleapis.com/auth/gmail.send",
+        ]
 
         mock_service = MagicMock()
         mock_service.users.return_value.getProfile.return_value.execute.return_value = {
@@ -159,6 +167,42 @@ class TestRunOauthFlow:
             assert email == "refreshed@gmail.com"
             mock_creds.refresh.assert_called_once()
             mock_store.assert_called_once_with(mock_creds)
+
+    def test_reauths_when_scopes_missing(self):
+        """Forces re-authentication when token is missing required scopes."""
+        # Token with old/wrong scopes
+        mock_old_creds = MagicMock()
+        mock_old_creds.valid = True
+        mock_old_creds.scopes = ["https://www.googleapis.com/auth/gmail.readonly"]
+
+        # New creds from OAuth flow
+        mock_new_creds = MagicMock()
+        mock_flow = MagicMock()
+        mock_flow.run_local_server.return_value = mock_new_creds
+
+        mock_service = MagicMock()
+        mock_service.users.return_value.getProfile.return_value.execute.return_value = {
+            "emailAddress": "reauthed@gmail.com"
+        }
+
+        with (
+            patch("gmail_mcp.auth.get_token", return_value=mock_old_creds),
+            patch("gmail_mcp.auth.get_credentials_path") as mock_path,
+            patch(
+                "gmail_mcp.auth.InstalledAppFlow.from_client_secrets_file",
+                return_value=mock_flow,
+            ),
+            patch("gmail_mcp.auth.store_token") as mock_store,
+            patch("gmail_mcp.auth.build", return_value=mock_service),
+        ):
+            mock_path.return_value.exists.return_value = True
+
+            email = run_oauth_flow()
+
+            assert email == "reauthed@gmail.com"
+            # Should have run the OAuth flow, not just returned existing token
+            mock_flow.run_local_server.assert_called_once()
+            mock_store.assert_called_once_with(mock_new_creds)
 
 
 class TestGetGmailService:

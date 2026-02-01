@@ -191,21 +191,174 @@ Filters are combined with AND logic:
 
 ---
 
+## get_email
+
+Get the full contents of an email by ID.
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "email_id": {
+      "type": "string",
+      "description": "The email ID (from list_emails)"
+    },
+    "format": {
+      "type": "string",
+      "enum": ["full", "text_only", "html_only"],
+      "description": "Response format (default: full)",
+      "default": "full"
+    }
+  },
+  "required": ["email_id"]
+}
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `email_id` | string | (required) | Email ID from list_emails |
+| `format` | string | "full" | Response format |
+
+### Output
+
+**Success:**
+```
+From: sender@example.com
+To: you@gmail.com
+Subject: Meeting tomorrow
+Date: 2026-02-01
+
+--- Body (Text) ---
+Hi, let's meet tomorrow at 2pm.
+
+--- Attachments (1) ---
+- agenda.pdf (application/pdf, 45.2 KB, ID: att123)
+```
+
+### Usage Examples
+
+- "Read email ID abc123"
+- "Show me the full content of that email"
+- "Get the text-only version of that email"
+
+---
+
+## get_attachments
+
+Download attachments from an email.
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "email_id": {
+      "type": "string",
+      "description": "The email ID (from list_emails)"
+    },
+    "attachment_id": {
+      "type": "string",
+      "description": "Specific attachment ID (downloads all if omitted)"
+    },
+    "save_to": {
+      "type": "string",
+      "description": "Directory to save files (default: ~/Downloads)"
+    }
+  },
+  "required": ["email_id"]
+}
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `email_id` | string | (required) | Email ID from list_emails |
+| `attachment_id` | string | - | Specific attachment to download |
+| `save_to` | string | ~/Downloads | Directory to save files |
+
+### Output
+
+**Success:**
+```
+Downloaded 2 attachment(s):
+  - /Users/you/Downloads/document.pdf
+  - /Users/you/Downloads/image.png
+```
+
+**No attachments:**
+```
+No attachments found in this email.
+```
+
+### Security Notes
+
+- Filenames are sanitized to prevent path traversal attacks
+- Duplicate filenames are handled with `_1`, `_2` suffixes
+- Only saves to user-specified or default Downloads directory
+
+### Usage Examples
+
+- "Download attachments from email abc123"
+- "Save the PDF attachment to my Documents folder"
+- "Get all attachments from that email"
+
+---
+
+## archive_email
+
+Archive an email (remove from inbox, keep in All Mail).
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "email_id": {
+      "type": "string",
+      "description": "The email ID to archive"
+    }
+  },
+  "required": ["email_id"]
+}
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `email_id` | string | (required) | Email ID to archive |
+
+### Output
+
+**Success:**
+```
+Email abc123 archived successfully.
+```
+
+### Usage Examples
+
+- "Archive email abc123"
+- "Move that email out of my inbox"
+- "Archive the last email"
+
+---
+
 ## Future Tools
 
 These tools are planned but not yet implemented:
 
-### read_email
-Read the full content of a specific email by ID.
-
-### search_emails  
-Advanced search with full Gmail query support.
-
 ### send_email
-Compose and send emails (requires `gmail.send` scope).
+Compose and send emails (requires `gmail.send` scope - already authorized).
 
 ### manage_labels
-Add/remove labels from emails (requires `gmail.modify` scope).
+Add/remove labels from emails.
 
 ### manage_drafts
-Create, edit, and send draft emails (requires `gmail.compose` scope).
+Create, edit, and send draft emails.

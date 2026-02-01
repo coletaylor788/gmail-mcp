@@ -10,8 +10,13 @@ from googleapiclient.discovery import build
 
 from .config import KEYCHAIN_SERVICE, get_credentials_path
 
-# Gmail API scopes - readonly for now
-SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+# Gmail API scopes
+# - gmail.modify: read, write, and modify emails (includes archive)
+# - gmail.send: send emails (used for integration tests)
+SCOPES = [
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.send",
+]
 
 
 def is_authenticated() -> bool:
@@ -52,11 +57,26 @@ def store_token(creds: Credentials) -> None:
     keyring.set_password(KEYCHAIN_SERVICE, "token", token_data)
 
 
+def _has_required_scopes(creds: Credentials) -> bool:
+    """Check if credentials have all required scopes.
+
+    Args:
+        creds: Google OAuth credentials
+
+    Returns:
+        True if all required scopes are present, False otherwise
+    """
+    if not creds.scopes:
+        return False
+    return all(scope in creds.scopes for scope in SCOPES)
+
+
 def run_oauth_flow() -> str:
     """Run OAuth flow to authenticate with Gmail.
 
-    If already authenticated with a valid token, returns the email without
-    opening browser. Otherwise, opens browser for user to grant access.
+    If already authenticated with a valid token and correct scopes, returns
+    the email without opening browser. If scopes are missing, forces
+    re-authentication. Otherwise, opens browser for user to grant access.
 
     Returns:
         The authenticated user's email address
@@ -64,16 +84,16 @@ def run_oauth_flow() -> str:
     Raises:
         FileNotFoundError: If credentials.json is missing
     """
-    # Check if we already have valid credentials
+    # Check if we already have valid credentials with correct scopes
     creds = get_token()
-    if creds and creds.valid:
-        # Already authenticated - just get the email
+    if creds and creds.valid and _has_required_scopes(creds):
+        # Already authenticated with correct scopes - just get the email
         service = build("gmail", "v1", credentials=creds)
         profile = service.users().getProfile(userId="me").execute()
         return profile.get("emailAddress", "unknown")
 
-    # Try to refresh expired token
-    if creds and creds.expired and creds.refresh_token:
+    # Try to refresh expired token (only if scopes are correct)
+    if creds and creds.expired and creds.refresh_token and _has_required_scopes(creds):
         try:
             creds.refresh(Request())
             store_token(creds)
@@ -84,7 +104,7 @@ def run_oauth_flow() -> str:
             # Refresh failed, need to re-authenticate
             pass
 
-    # Need to run OAuth flow
+    # Need to run OAuth flow (either no token, invalid, or missing scopes)
     credentials_path = get_credentials_path()
 
     if not credentials_path.exists():

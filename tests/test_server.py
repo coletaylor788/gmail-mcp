@@ -4,7 +4,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gmail_mcp.server import _authenticate, _list_emails
+from gmail_mcp.server import (
+    _archive_email,
+    _authenticate,
+    _extract_body_parts,
+    _get_attachments,
+    _get_email,
+    _list_emails,
+    _sanitize_filename,
+)
 
 
 class TestAuthenticate:
@@ -293,3 +301,337 @@ class TestListEmailsFilters:
 
             call_args = mock_list.call_args
             assert "q" not in call_args.kwargs or call_args.kwargs.get("q") is None
+
+
+class TestExtractBodyParts:
+    """Tests for _extract_body_parts helper."""
+
+    def test_extracts_text_body(self):
+        """Extracts plain text body from simple message."""
+        import base64
+        body_content = "Hello world"
+        encoded = base64.urlsafe_b64encode(body_content.encode()).decode()
+
+        payload = {
+            "mimeType": "text/plain",
+            "body": {"data": encoded},
+        }
+
+        text, html, attachments = _extract_body_parts(payload)
+
+        assert text == "Hello world"
+        assert html is None
+        assert attachments == []
+
+    def test_extracts_html_body(self):
+        """Extracts HTML body from simple message."""
+        import base64
+        body_content = "<html><body>Hello</body></html>"
+        encoded = base64.urlsafe_b64encode(body_content.encode()).decode()
+
+        payload = {
+            "mimeType": "text/html",
+            "body": {"data": encoded},
+        }
+
+        text, html, attachments = _extract_body_parts(payload)
+
+        assert text is None
+        assert html == "<html><body>Hello</body></html>"
+        assert attachments == []
+
+    def test_extracts_multipart_content(self):
+        """Extracts text and HTML from multipart message."""
+        import base64
+        text_content = "Plain text"
+        html_content = "<p>HTML</p>"
+
+        payload = {
+            "mimeType": "multipart/alternative",
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "body": {"data": base64.urlsafe_b64encode(text_content.encode()).decode()},
+                },
+                {
+                    "mimeType": "text/html",
+                    "body": {"data": base64.urlsafe_b64encode(html_content.encode()).decode()},
+                },
+            ],
+        }
+
+        text, html, attachments = _extract_body_parts(payload)
+
+        assert text == "Plain text"
+        assert html == "<p>HTML</p>"
+
+    def test_extracts_attachments(self):
+        """Extracts attachment metadata from message."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "body": {"data": "SGVsbG8="},  # "Hello"
+                },
+                {
+                    "mimeType": "application/pdf",
+                    "filename": "document.pdf",
+                    "body": {"attachmentId": "att123", "size": 1024},
+                },
+            ],
+        }
+
+        text, html, attachments = _extract_body_parts(payload)
+
+        assert len(attachments) == 1
+        assert attachments[0]["id"] == "att123"
+        assert attachments[0]["filename"] == "document.pdf"
+        assert attachments[0]["mimeType"] == "application/pdf"
+        assert attachments[0]["size"] == 1024
+
+
+class TestSanitizeFilename:
+    """Tests for _sanitize_filename helper."""
+
+    def test_removes_path_separators(self):
+        """Removes forward and back slashes."""
+        assert _sanitize_filename("path/to/file.txt") == "path_to_file.txt"
+        assert _sanitize_filename("path\\to\\file.txt") == "path_to_file.txt"
+
+    def test_removes_special_characters(self):
+        """Removes characters that are invalid on some filesystems."""
+        assert _sanitize_filename('file<>:"|?*.txt') == "file_______.txt"
+
+    def test_handles_empty_filename(self):
+        """Returns default for empty filename."""
+        assert _sanitize_filename("") == "attachment"
+
+    def test_handles_dot_prefix(self):
+        """Handles filenames starting with dot."""
+        assert _sanitize_filename(".hidden") == "attachment.hidden"
+
+    def test_truncates_long_filenames(self):
+        """Truncates very long filenames."""
+        long_name = "a" * 300 + ".txt"
+        result = _sanitize_filename(long_name)
+        assert len(result) <= 255
+
+
+class TestGetEmail:
+    """Tests for get_email tool."""
+
+    @pytest.mark.asyncio
+    async def test_returns_error_when_not_authenticated(self):
+        """Returns error when not authenticated."""
+        with patch("gmail_mcp.server.is_authenticated", return_value=False):
+            result = await _get_email({"email_id": "123"})
+            assert "Not authenticated" in result[0].text
+
+    @pytest.mark.asyncio
+    async def test_returns_error_when_email_id_missing(self):
+        """Returns error when email_id not provided."""
+        with (
+            patch("gmail_mcp.server.is_authenticated", return_value=True),
+            patch("gmail_mcp.server.get_gmail_service", return_value=MagicMock()),
+        ):
+            result = await _get_email({})
+            assert "email_id is required" in result[0].text
+
+    @pytest.mark.asyncio
+    async def test_returns_full_email_content(self):
+        """Returns formatted email with headers and body."""
+        import base64
+        body_text = "Test email body"
+        encoded_body = base64.urlsafe_b64encode(body_text.encode()).decode()
+
+        mock_service = MagicMock()
+        mock_get = mock_service.users.return_value.messages.return_value.get
+        mock_get.return_value.execute.return_value = {
+            "payload": {
+                "mimeType": "text/plain",
+                "headers": [
+                    {"name": "From", "value": "sender@test.com"},
+                    {"name": "To", "value": "recipient@test.com"},
+                    {"name": "Subject", "value": "Test Subject"},
+                    {"name": "Date", "value": "2026-02-01"},
+                ],
+                "body": {"data": encoded_body},
+            },
+        }
+
+        with (
+            patch("gmail_mcp.server.is_authenticated", return_value=True),
+            patch("gmail_mcp.server.get_gmail_service", return_value=mock_service),
+        ):
+            result = await _get_email({"email_id": "123"})
+
+            assert "From: sender@test.com" in result[0].text
+            assert "Subject: Test Subject" in result[0].text
+            assert "Test email body" in result[0].text
+
+    @pytest.mark.asyncio
+    async def test_text_only_format(self):
+        """Returns only text body when format is text_only."""
+        import base64
+        text_body = "Plain text"
+        html_body = "<p>HTML</p>"
+
+        mock_service = MagicMock()
+        mock_get = mock_service.users.return_value.messages.return_value.get
+        text_encoded = base64.urlsafe_b64encode(text_body.encode()).decode()
+        html_encoded = base64.urlsafe_b64encode(html_body.encode()).decode()
+        mock_get.return_value.execute.return_value = {
+            "payload": {
+                "mimeType": "multipart/alternative",
+                "headers": [{"name": "From", "value": "test@test.com"}],
+                "parts": [
+                    {"mimeType": "text/plain", "body": {"data": text_encoded}},
+                    {"mimeType": "text/html", "body": {"data": html_encoded}},
+                ],
+            },
+        }
+
+        with (
+            patch("gmail_mcp.server.is_authenticated", return_value=True),
+            patch("gmail_mcp.server.get_gmail_service", return_value=mock_service),
+        ):
+            result = await _get_email({"email_id": "123", "format": "text_only"})
+
+            assert "Plain text" in result[0].text
+            assert "<p>HTML</p>" not in result[0].text
+
+
+class TestGetAttachments:
+    """Tests for get_attachments tool."""
+
+    @pytest.mark.asyncio
+    async def test_returns_error_when_not_authenticated(self):
+        """Returns error when not authenticated."""
+        with patch("gmail_mcp.server.is_authenticated", return_value=False):
+            result = await _get_attachments({"email_id": "123"})
+            assert "Not authenticated" in result[0].text
+
+    @pytest.mark.asyncio
+    async def test_returns_error_when_email_id_missing(self):
+        """Returns error when email_id not provided."""
+        with (
+            patch("gmail_mcp.server.is_authenticated", return_value=True),
+            patch("gmail_mcp.server.get_gmail_service", return_value=MagicMock()),
+        ):
+            result = await _get_attachments({})
+            assert "email_id is required" in result[0].text
+
+    @pytest.mark.asyncio
+    async def test_returns_no_attachments_message(self):
+        """Returns message when email has no attachments."""
+        mock_service = MagicMock()
+        mock_get = mock_service.users.return_value.messages.return_value.get
+        mock_get.return_value.execute.return_value = {
+            "payload": {
+                "mimeType": "text/plain",
+                "body": {"data": "SGVsbG8="},  # "Hello"
+            },
+        }
+
+        with (
+            patch("gmail_mcp.server.is_authenticated", return_value=True),
+            patch("gmail_mcp.server.get_gmail_service", return_value=mock_service),
+        ):
+            result = await _get_attachments({"email_id": "123"})
+            assert "No attachments found" in result[0].text
+
+    @pytest.mark.asyncio
+    async def test_downloads_attachments_to_directory(self, tmp_path):
+        """Downloads attachments and saves to specified directory."""
+        import base64
+        file_content = b"PDF content here"
+        encoded_content = base64.urlsafe_b64encode(file_content).decode()
+
+        mock_service = MagicMock()
+        mock_get = mock_service.users.return_value.messages.return_value.get
+        mock_get.return_value.execute.return_value = {
+            "payload": {
+                "mimeType": "multipart/mixed",
+                "parts": [
+                    {
+                        "mimeType": "application/pdf",
+                        "filename": "test.pdf",
+                        "body": {"attachmentId": "att123", "size": 100},
+                    },
+                ],
+            },
+        }
+
+        mock_att = mock_service.users.return_value.messages.return_value.attachments
+        mock_att_get = mock_att.return_value.get
+        mock_att_get.return_value.execute.return_value = {"data": encoded_content}
+
+        with (
+            patch("gmail_mcp.server.is_authenticated", return_value=True),
+            patch("gmail_mcp.server.get_gmail_service", return_value=mock_service),
+        ):
+            result = await _get_attachments({
+                "email_id": "123",
+                "save_to": str(tmp_path),
+            })
+
+            assert "Downloaded 1 attachment" in result[0].text
+            assert (tmp_path / "test.pdf").exists()
+            assert (tmp_path / "test.pdf").read_bytes() == file_content
+
+
+class TestArchiveEmail:
+    """Tests for archive_email tool."""
+
+    @pytest.mark.asyncio
+    async def test_returns_error_when_not_authenticated(self):
+        """Returns error when not authenticated."""
+        with patch("gmail_mcp.server.is_authenticated", return_value=False):
+            result = await _archive_email({"email_id": "123"})
+            assert "Not authenticated" in result[0].text
+
+    @pytest.mark.asyncio
+    async def test_returns_error_when_email_id_missing(self):
+        """Returns error when email_id not provided."""
+        with (
+            patch("gmail_mcp.server.is_authenticated", return_value=True),
+            patch("gmail_mcp.server.get_gmail_service", return_value=MagicMock()),
+        ):
+            result = await _archive_email({})
+            assert "email_id is required" in result[0].text
+
+    @pytest.mark.asyncio
+    async def test_archives_email_successfully(self):
+        """Archives email by removing INBOX label."""
+        mock_service = MagicMock()
+        mock_modify = mock_service.users.return_value.messages.return_value.modify
+        mock_modify.return_value.execute.return_value = {}
+
+        with (
+            patch("gmail_mcp.server.is_authenticated", return_value=True),
+            patch("gmail_mcp.server.get_gmail_service", return_value=mock_service),
+        ):
+            result = await _archive_email({"email_id": "123"})
+
+            assert "archived successfully" in result[0].text
+            mock_modify.assert_called_once_with(
+                userId="me",
+                id="123",
+                body={"removeLabelIds": ["INBOX"]},
+            )
+
+    @pytest.mark.asyncio
+    async def test_returns_error_on_api_failure(self):
+        """Returns error when Gmail API fails."""
+        mock_service = MagicMock()
+        mock_modify = mock_service.users.return_value.messages.return_value.modify
+        mock_modify.return_value.execute.side_effect = Exception("API error")
+
+        with (
+            patch("gmail_mcp.server.is_authenticated", return_value=True),
+            patch("gmail_mcp.server.get_gmail_service", return_value=mock_service),
+        ):
+            result = await _archive_email({"email_id": "123"})
+
+            assert "Error archiving email" in result[0].text

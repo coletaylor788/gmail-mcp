@@ -5,7 +5,10 @@ A Model Context Protocol (MCP) server for Gmail integration with AI assistants l
 ## Features
 
 - **Secure authentication** - OAuth tokens stored in macOS Keychain (never on disk)
-- **List emails** - View recent emails from your inbox
+- **List emails** - View recent emails with filters
+- **Read emails** - Get full email content and attachments
+- **Download attachments** - Save attachments to disk
+- **Archive emails** - Remove from inbox, keep in All Mail
 
 ## Prerequisites
 
@@ -127,12 +130,50 @@ The `query` parameter accepts Gmail search syntax:
 - `older_than:1m` - Older than 1 month
 - Combine: `from:boss@company.com newer_than:7d has:attachment`
 
+### get_email
+
+Get the full contents of an email by ID.
+
+**Parameters:**
+- `email_id` (required): The email ID (from list_emails)
+- `format` (optional): Response format - "full" (default), "text_only", or "html_only"
+
+**Examples:**
+- "Read email ID abc123"
+- "Show me the full content of that email"
+- "Get the text-only version of that email"
+
+### get_attachments
+
+Download attachments from an email.
+
+**Parameters:**
+- `email_id` (required): The email ID (from list_emails)
+- `attachment_id` (optional): Specific attachment ID (downloads all if omitted)
+- `save_to` (optional): Directory to save files (default: ~/Downloads)
+
+**Examples:**
+- "Download attachments from email abc123"
+- "Save the PDF attachment to my Documents folder"
+
+### archive_email
+
+Archive an email (remove from inbox, keep in All Mail).
+
+**Parameters:**
+- `email_id` (required): The email ID to archive
+
+**Examples:**
+- "Archive email abc123"
+- "Move that email out of my inbox"
+
 ## Security
 
 - **Refresh tokens** are stored in macOS Keychain, encrypted at rest
 - **Access tokens** are kept in memory only (never persisted)
 - **Client credentials** (`credentials.json`) stay local in `~/.config/gmail-mcp/`
-- The server requests **read-only** Gmail access (`gmail.readonly` scope)
+- The server requests **modify** Gmail access (`gmail.modify` scope) to support archiving
+- Attachment filenames are sanitized to prevent path traversal attacks
 
 You can inspect or delete stored credentials in Keychain Access.app (search for "gmail-mcp").
 
