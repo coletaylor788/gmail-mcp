@@ -63,7 +63,11 @@ pip install -e .
 
 ### 4. Configure Claude
 
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+#### Option A: Claude Desktop
+
+1. Open Claude Desktop settings
+2. Edit the config file at `~/Library/Application Support/Claude/claude_desktop_config.json`
+3. Add the gmail server (replace `/path/to/gmail-mcp` with your actual path):
 
 ```json
 {
@@ -76,7 +80,11 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 }
 ```
 
-Or for Claude Code, add to `.vscode/mcp.json`:
+4. Restart Claude Desktop
+
+#### Option B: VS Code with Claude / Copilot
+
+1. Create `.vscode/mcp.json` in your workspace (or add to existing):
 
 ```json
 {
@@ -89,9 +97,31 @@ Or for Claude Code, add to `.vscode/mcp.json`:
 }
 ```
 
+2. Reload VS Code window
+
+#### Finding Your Path
+
+To get the correct path for the config:
+
+```bash
+cd /path/to/gmail-mcp
+echo "$(pwd)/.venv/bin/python"
+```
+
 ### 5. Authenticate
 
-In Claude, ask it to authenticate with Gmail. It will call the `authenticate` tool, which opens your browser for OAuth login. After you grant access, the refresh token is securely stored in your macOS Keychain.
+In Claude, ask it to authenticate with Gmail:
+
+> "Authenticate with Gmail" or "Connect to my Gmail account"
+
+This calls the `authenticate` tool, which:
+1. Opens your browser for Google OAuth consent
+2. You grant access to your Gmail
+3. The refresh token is securely stored in your macOS Keychain
+
+You only need to do this once. The token persists across sessions.
+
+**Note:** If you see a "scope" error, just run authenticate again - the server will automatically request the updated permissions.
 
 ## Available Tools
 
