@@ -68,3 +68,7 @@ Change `get_attachments` to filter by **filename** instead of attachment ID:
 - [x] Update `docs/tools.md`
 - [x] Update `README.md`
 - [x] Mark plan as complete with date
+
+### Final
+- [x] Changes committed with descriptive message
+- [x] Changes pushed to remote

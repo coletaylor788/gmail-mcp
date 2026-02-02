@@ -56,6 +56,10 @@ Every plan must end with a checklist. **The checklist is a live status document*
 - [ ] README.md updated (if user-facing changes)
 - [ ] docs/architecture.md updated (if architecture changed)
 - [ ] Plan marked as complete with date
+
+### Final
+- [ ] Changes committed with descriptive message
+- [ ] Changes pushed to remote
 ```
 
 ### 3. Implement
@@ -83,7 +87,12 @@ After implementation is complete:
 - Mark plan as complete with date in the status line
 - **Check off documentation items in the plan**
 
-### 7. Verify Complete
+### 7. Commit & Push
+- Commit all changes with a descriptive message
+- Push to remote
+- **Check off the commit/push item in the plan**
+
+### 8. Verify Complete
 **You are not done until every checkbox in the plan is checked.**
 Review the checklist one final time before declaring the task complete.
 
